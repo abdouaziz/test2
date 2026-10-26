@@ -1,0 +1,54 @@
+# Déploiement de l'API Whisper sur GKE.
+# Cloud Build remplace l'image par celle du build en cours (étape 4 de
+# cloudbuild.yaml). Pour un déploiement à la main avec kubectl, remplacez
+# PROJECT_ID par l'ID de votre projet Google Cloud.
+# Les ressources (CPU, mémoire) se règlent ici, plus dans cloudbuild.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whisper-small-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: whisper-small-api
+  template:
+    metadata:
+      labels:
+        app: whisper-small-api
+    spec:
+      containers:
+      - name: api
+        image: us-central1-docker.pkg.dev/PROJECT_ID/whisper-small/whisper-small-api:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        # Whisper small + torch : même dimensionnement que sur Cloud Run.
+        resources:
+          requests:
+            cpu: "2"
+            memory: 4Gi
+          limits:
+            memory: 4Gi
+        # Le pod ne reçoit du trafic que lorsque l'API répond.
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+# Expose l'API sur Internet via un équilibreur de charge (port 80).
+apiVersion: v1
+kind: Service
+metadata:
+  name: whisper-small-api
+spec:
+  type: LoadBalancer
+  selector:
+    app: whisper-small-api
+  ports:
+  - port: 80
+    targetPort: 8080

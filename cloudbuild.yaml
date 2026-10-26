@@ -1,11 +1,11 @@
 # Pipeline Cloud Build : construit l'image Docker de l'API FastAPI,
-# la pousse dans Artifact Registry puis la déploie sur Cloud Run.
-# Chaque étape tourne dans son propre conteneur, avec le code du dépôt
-# disponible dans /workspace.
+# la pousse dans Artifact Registry, crée le cluster GKE s'il n'existe pas
+# encore, puis y déploie l'API. Chaque étape tourne dans son propre
+# conteneur, avec le code du dépôt disponible dans /workspace.
 #
 # Les valeurs propres à l'environnement sont des substitutions (voir en bas
 # du fichier). On peut les changer sans toucher aux étapes, par exemple :
-#   gcloud builds submit --substitutions=_REGION=europe-west1,_SERVICE=mon-api
+#   gcloud builds submit --substitutions=_REGION=europe-west1,_CLUSTER=mon-cluster
 # ou dans le déclencheur (trigger) Cloud Build, rubrique « Substitutions ».
 
 steps:
@@ -19,23 +19,28 @@ steps:
 - name: 'gcr.io/cloud-builders/docker'
   args: ['push','--all-tags','${_IMAGE_URI}']
 
-# 3. Deploy : crée ou met à jour le service Cloud Run avec l'image de ce
-#    build. Une nouvelle révision remplace l'ancienne sans interruption.
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
-  entrypoint: gcloud
+# 3. Cluster : crée le cluster GKE Autopilot s'il n'existe pas encore.
+#    Si le cluster existe déjà, l'étape ne fait rien. La création prend
+#    environ 5 à 10 minutes.
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: bash
   args:
-  - 'run'
-  - 'deploy'
-  - '${_SERVICE}'                 # nom du service Cloud Run
-  - '--image'
-  - '${_IMAGE_URI}:$BUILD_ID'
-  - '--region'
-  - '${_REGION}'
-  - '--memory'
-  - '${_MEMORY}'
-  - '--cpu'
-  - '${_CPU}'
-  - '--allow-unauthenticated'     # API publique : accessible sans authentification
+  - '-c'
+  - |
+    gcloud container clusters describe ${_CLUSTER} --region ${_REGION} > /dev/null 2>&1 \
+      || gcloud container clusters create-auto ${_CLUSTER} --region ${_REGION}
+
+# 4. Deploy : applique k8s/deployment.yaml sur le cluster, avec l'image de
+#    ce build à la place de celle écrite dans le fichier, puis attend que
+#    les nouveaux pods soient prêts.
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: bash
+  args:
+  - '-c'
+  - |
+    gcloud container clusters get-credentials ${_CLUSTER} --region ${_REGION}
+    sed "s|image: .*|image: ${_IMAGE_URI}:$BUILD_ID|" k8s/deployment.yaml | kubectl apply -f -
+    kubectl rollout status deployment/whisper-small-api --timeout=15m
 
 # Images produites par ce build : affichées dans les résultats du build
 # (console Cloud Build). Déjà poussées à l'étape 2, donc pas de second envoi.
@@ -46,14 +51,16 @@ images:
 # Valeurs par défaut des variables. Les noms personnalisés doivent commencer
 # par « _ ». $PROJECT_ID et $BUILD_ID sont fournis par Cloud Build.
 substitutions:
-  _REGION: 'us-central1'          # région d'Artifact Registry et de Cloud Run
+  _REGION: 'us-central1'          # région d'Artifact Registry et du cluster GKE
   _REPOSITORY: 'whisper-small'          # dépôt Artifact Registry
   _IMAGE: 'whisper-small-api'          # nom de l'image
-  _SERVICE: 'whisper-small-api'        # nom du service Cloud Run
-  _MEMORY: '4Gi'                  # Whisper small + torch : 512Mi par défaut ne suffit pas
-  _CPU: '2'
+  _CLUSTER: 'whisper-cluster'     # nom du cluster GKE
   # Chemin complet de l'image, calculé à partir des valeurs ci-dessus.
   _IMAGE_URI: '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE}'
+
+# Création du cluster + build de l'image : les 10 minutes par défaut ne
+# suffisent pas.
+timeout: '3600s'
 
 options:
   # Logs du build uniquement dans Cloud Logging (pas de bucket à gérer).
