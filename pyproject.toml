@@ -1,0 +1,33 @@
+[project]
+name = "ggapi"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "abdouaziz", email = "abdouaziz@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=5.1.0",
+    "fastapi>=0.162.0",
+    "librosa>=1.0.0",
+    "python-multipart>=0.0.32",
+    "torch>=2.14.1",
+    "transformers>=5.20.2",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+ggapi = "ggapi.main:main"
+
+[build-system]
+requires = ["uv_build>=0.13.4,<0.14.0"]
+build-backend = "uv_build"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
