@@ -1,0 +1,62 @@
+# Pipeline Cloud Build : construit l'image Docker de l'API FastAPI,
+# la pousse dans Artifact Registry puis la déploie sur Cloud Run.
+# Chaque étape tourne dans son propre conteneur, avec le code du dépôt
+# disponible dans /workspace.
+#
+# Les valeurs propres à l'environnement sont des substitutions (voir en bas
+# du fichier). On peut les changer sans toucher aux étapes, par exemple :
+#   gcloud builds submit --substitutions=_REGION=europe-west1,_SERVICE=mon-api
+# ou dans le déclencheur (trigger) Cloud Build, rubrique « Substitutions ».
+
+steps:
+# 1. Build : construit l'image à partir du Dockerfile à la racine du dépôt.
+#    Deux tags : $BUILD_ID (unique par build, fourni par Cloud Build) pour
+#    savoir quelle version est déployée, et latest pour la dernière version.
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build','-t','${_IMAGE_URI}:$BUILD_ID','-t','${_IMAGE_URI}:latest','.']
+
+# 2. Push : envoie l'image (les deux tags) dans le dépôt Artifact Registry.
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push','--all-tags','${_IMAGE_URI}']
+
+# 3. Deploy : crée ou met à jour le service Cloud Run avec l'image de ce
+#    build. Une nouvelle révision remplace l'ancienne sans interruption.
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+  entrypoint: gcloud
+  args:
+  - 'run'
+  - 'deploy'
+  - '${_SERVICE}'                 # nom du service Cloud Run
+  - '--image'
+  - '${_IMAGE_URI}:$BUILD_ID'
+  - '--region'
+  - '${_REGION}'
+  - '--memory'
+  - '${_MEMORY}'
+  - '--cpu'
+  - '${_CPU}'
+  - '--allow-unauthenticated'     # API publique : accessible sans authentification
+
+# Images produites par ce build : affichées dans les résultats du build
+# (console Cloud Build). Déjà poussées à l'étape 2, donc pas de second envoi.
+images:
+- '${_IMAGE_URI}:$BUILD_ID'
+- '${_IMAGE_URI}:latest'
+
+# Valeurs par défaut des variables. Les noms personnalisés doivent commencer
+# par « _ ». $PROJECT_ID et $BUILD_ID sont fournis par Cloud Build.
+substitutions:
+  _REGION: 'us-central1'          # région d'Artifact Registry et de Cloud Run
+  _REPOSITORY: 'whisper-small'          # dépôt Artifact Registry
+  _IMAGE: 'whisper-small-api'          # nom de l'image
+  _SERVICE: 'whisper-small-api'        # nom du service Cloud Run
+  _MEMORY: '4Gi'                  # Whisper small + torch : 512Mi par défaut ne suffit pas
+  _CPU: '2'
+  # Chemin complet de l'image, calculé à partir des valeurs ci-dessus.
+  _IMAGE_URI: '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_IMAGE}'
+
+options:
+  # Logs du build uniquement dans Cloud Logging (pas de bucket à gérer).
+  logging: CLOUD_LOGGING_ONLY
+  # Permet à _IMAGE_URI d'utiliser les autres substitutions.
+  dynamic_substitutions: true
