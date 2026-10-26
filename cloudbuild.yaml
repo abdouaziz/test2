@@ -21,14 +21,22 @@ steps:
 
 # 3. Cluster : crée le cluster GKE Autopilot s'il n'existe pas encore.
 #    Si le cluster existe déjà, l'étape ne fait rien. La création prend
-#    environ 5 à 10 minutes.
+#    environ 5 à 10 minutes. Un cluster resté en ERROR (création ratée,
+#    par exemple faute de ressources dans la région) est supprimé puis
+#    recréé.
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: bash
   args:
   - '-c'
   - |
-    gcloud container clusters describe ${_CLUSTER} --region ${_REGION} > /dev/null 2>&1 \
-      || gcloud container clusters create-auto ${_CLUSTER} --region ${_REGION}
+    STATUS=$(gcloud container clusters describe ${_CLUSTER} --region ${_CLUSTER_REGION} --format='value(status)' 2>/dev/null)
+    if [ "$$STATUS" = "ERROR" ]; then
+      gcloud container clusters delete ${_CLUSTER} --region ${_CLUSTER_REGION} --quiet
+      STATUS=""
+    fi
+    if [ -z "$$STATUS" ]; then
+      gcloud container clusters create-auto ${_CLUSTER} --region ${_CLUSTER_REGION}
+    fi
 
 # 4. Deploy : applique k8s/deployment.yaml sur le cluster, avec l'image de
 #    ce build à la place de celle écrite dans le fichier, puis attend que
@@ -38,7 +46,7 @@ steps:
   args:
   - '-c'
   - |
-    gcloud container clusters get-credentials ${_CLUSTER} --region ${_REGION}
+    gcloud container clusters get-credentials ${_CLUSTER} --region ${_CLUSTER_REGION}
     sed "s|image: .*|image: ${_IMAGE_URI}:$BUILD_ID|" k8s/deployment.yaml | kubectl apply -f -
     kubectl rollout status deployment/whisper-small-api --timeout=15m
 
@@ -52,7 +60,11 @@ images:
 # Valeurs par défaut des variables. Les noms personnalisés doivent commencer
 # par « _ ». $PROJECT_ID et $BUILD_ID sont fournis par Cloud Build.
 substitutions:
-  _REGION: 'us-central1'          # région d'Artifact Registry et du cluster GKE
+  _REGION: 'us-central1'          # région d'Artifact Registry
+  # Région du cluster GKE. Distincte de _REGION : si une région manque de
+  # ressources (erreur GCE_STOCKOUT), on en change sans toucher au dépôt
+  # d'images. Le cluster peut tirer les images d'une autre région.
+  _CLUSTER_REGION: 'us-east1'
   _REPOSITORY: 'whisper-small'          # dépôt Artifact Registry
   _IMAGE: 'whisper-small-api'          # nom de l'image
   _CLUSTER: 'whisper-cluster'     # nom du cluster GKE
